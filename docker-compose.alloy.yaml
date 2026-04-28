@@ -1,0 +1,82 @@
+# Alloy sandbox compose for Dub.
+# Brings up MySQL + the Planetscale HTTP proxy + the Next.js app (apps/web)
+# all on the host network so the Alloy preview proxy at http://localhost:8080
+# can reach the Next.js dev server listening on http://localhost:8888.
+
+services:
+  ps-mysql:
+    image: mysql:8.0
+    network_mode: host
+    restart: unless-stopped
+    environment:
+      MYSQL_DATABASE: planetscale
+      MYSQL_ROOT_HOST: "%"
+      MYSQL_ALLOW_EMPTY_PASSWORD: "yes"
+    command:
+      - --max_connections=1000
+      - --default-authentication-plugin=mysql_native_password
+    volumes:
+      - ps-mysql:/var/lib/mysql
+
+  planetscale-proxy:
+    image: ghcr.io/mattrobenolt/ps-http-sim:latest
+    network_mode: host
+    restart: unless-stopped
+    depends_on:
+      - ps-mysql
+    command:
+      - -mysql-no-pass
+      - -listen-addr=127.0.0.1
+      - -listen-port=3900
+      - -mysql-addr=127.0.0.1
+      - -mysql-port=3306
+      - -mysql-dbname=planetscale
+
+  web:
+    image: node:23-bookworm
+    working_dir: /workspace/apps/web
+    network_mode: host
+    restart: unless-stopped
+    depends_on:
+      - planetscale-proxy
+    environment:
+      NEXT_PUBLIC_APP_NAME: Dub
+      NEXT_PUBLIC_APP_DOMAIN: dub.co
+      NEXT_PUBLIC_APP_SHORT_DOMAIN: dub.sh
+      NEXTAUTH_SECRET: alloy-local-dev-secret-please-change-me-32b
+      NEXTAUTH_URL: http://localhost:8888
+      DATABASE_URL: "mysql://root:@127.0.0.1:3306/planetscale"
+      PLANETSCALE_DATABASE_URL: "http://root:unused@127.0.0.1:3900/planetscale"
+      UNSUBSCRIBE_TOKEN_SECRET: alloy-local-dev-unsubscribe-secret
+      SMTP_HOST: localhost
+      SMTP_PORT: "1025"
+      SMTP_USER: smtpUser
+      SMTP_PASSWORD: smtpPassword
+      NEXT_TELEMETRY_DISABLED: "1"
+      PNPM_HOME: /pnpm-bin
+      PATH: /pnpm-bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+    volumes:
+      - .:/workspace
+      - pnpm-store:/pnpm-store
+    command:
+      - bash
+      - -lc
+      - |
+        set -e
+        corepack enable
+        corepack prepare pnpm@9.15.9 --activate
+        pnpm config set store-dir /pnpm-store
+        cd /workspace
+        echo "[alloy] Installing dependencies (this can take a few minutes on first boot)..."
+        pnpm install --frozen-lockfile
+        echo "[alloy] Generating Prisma client..."
+        pnpm --filter=@dub/prisma generate
+        echo "[alloy] Building shared packages (./packages/**)..."
+        pnpm -r --filter "./packages/**" build
+        cd /workspace/apps/web
+        echo "[alloy] Starting Next.js dev server on http://localhost:8888 ..."
+        exec pnpm exec next dev --turbopack --port 8888 --hostname 0.0.0.0
+
+volumes:
+  ps-mysql:
+  pnpm-store:

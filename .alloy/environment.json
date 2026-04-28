@@ -1,0 +1,5 @@
+{
+  "dockerComposePath": "docker-compose.alloy.yaml",
+  "frontendPort": 8888,
+  "homeUrl": "/login"
+}
