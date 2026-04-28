@@ -35,6 +35,21 @@ export const config = {
 export default async function middleware(req: NextRequest, ev: NextFetchEvent) {
   const { domain, path, key, fullKey } = parse(req);
 
+  // Skip already-rewritten internal paths.
+  // Next.js 15's `runtime: "nodejs"` middleware re-runs on internal rewrites
+  // (see https://github.com/vercel/next.js/issues/84504), which would cause
+  // the host-based rewrites below to ping-pong with `/app.dub.co/...` etc.
+  // These paths exist only as internal rewrite targets and never reach
+  // middleware in normal production routing, so it is always safe to bypass.
+  if (
+    path.startsWith("/app.dub.co/") ||
+    path.startsWith("/api.dub.co/") ||
+    path.startsWith("/admin.dub.co/") ||
+    path.startsWith("/partners.dub.co/")
+  ) {
+    return NextResponse.next();
+  }
+
   // Axiom logging
   logger.info(...transformMiddlewareRequest(req));
   ev.waitUntil(logger.flush());

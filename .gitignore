@@ -3,6 +3,10 @@
 # dependencies
 node_modules
 dist/
+.pnpm-store/
+
+# alloy / claude session state
+.claude/
 
 # next.js
 .next/
