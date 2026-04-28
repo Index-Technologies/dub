@@ -26,9 +26,14 @@ export const config = {
      * 1. /api/ routes
      * 2. /_next/ (Next.js internals)
      * 3. /_proxy/ (proxies for third-party services)
-     * 4. Metadata files: favicon.ico, sitemap.xml, robots.txt, manifest.webmanifest
+     * 4. The app/api/admin/partners route-group prefixes — middleware
+     *    rewrites the public path to one of these (e.g. /login ->
+     *    /app.dub.co/login). With `runtime: "nodejs"` middleware re-runs on
+     *    internal rewrites (unlike the Edge runtime), so excluding these
+     *    prefixes prevents an immediate redirect loop on the rewritten path.
+     * 5. Metadata files: favicon.ico, sitemap.xml, robots.txt, manifest.webmanifest
      */
-    "/((?!api/|_next/|_proxy/|favicon.ico|sitemap.xml|robots.txt|manifest.webmanifest).*)",
+    "/((?!api/|_next/|_proxy/|app\\.dub\\.co/|api\\.dub\\.co/|admin\\.dub\\.co/|partners\\.dub\\.co/|favicon.ico|sitemap.xml|robots.txt|manifest.webmanifest).*)",
   ],
 };
 

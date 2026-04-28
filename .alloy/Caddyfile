@@ -1,0 +1,17 @@
+# Reverse proxy for the Alloy sandbox.
+#
+# Listens on :8080 (the Alloy convention) and forwards to the Next.js dev
+# server on :8888. The upstream Host header is rewritten to "localhost:8888"
+# because Dub's middleware (packages/utils/src/constants/main.ts) hardcodes
+# that exact string in APP_HOSTNAMES — without the rewrite the request gets
+# treated as an unknown short-link domain and renders the public 404 page
+# instead of the dashboard.
+:8080 {
+    reverse_proxy 127.0.0.1:8888 {
+        header_up Host localhost:8888
+        # Next's redirects build absolute URLs from the upstream Host header
+        # ("localhost:8888"), which would otherwise leak to the browser. Rewrite
+        # them back to the public origin on the way out.
+        header_down Location "://localhost:8888" "://localhost:8080"
+    }
+}

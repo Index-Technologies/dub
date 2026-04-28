@@ -1,0 +1,166 @@
+# Alloy dev-env compose file for the Dub monorepo.
+#
+# Boots the apps/web Next.js dev server on http://localhost:8080 along with the
+# minimum infra needed to make a meaningful page render: a MySQL database, the
+# PlanetScale HTTP proxy that the app speaks to in dev, plain Redis with the
+# hiett/serverless-redis-http shim that emulates Upstash's REST API, and a
+# MailHog SMTP catcher so email sends don't crash.
+#
+# All services use network_mode: host so the Next.js app and the supporting
+# services can reach each other via 127.0.0.1 with no extra DNS plumbing.
+
+services:
+  mysql:
+    image: mysql:8.0
+    network_mode: host
+    restart: unless-stopped
+    environment:
+      MYSQL_DATABASE: planetscale
+      MYSQL_ROOT_HOST: "%"
+      MYSQL_ALLOW_EMPTY_PASSWORD: "yes"
+    command:
+      - "--max_connections=1000"
+      - "--default-authentication-plugin=mysql_native_password"
+      - "--bind-address=127.0.0.1"
+    volumes:
+      - mysql-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+
+  planetscale-proxy:
+    image: ghcr.io/mattrobenolt/ps-http-sim:latest
+    network_mode: host
+    restart: unless-stopped
+    command:
+      - "-mysql-no-pass"
+      - "-listen-addr=127.0.0.1"
+      - "-listen-port=3900"
+      - "-mysql-dbname=planetscale"
+      - "-mysql-addr=127.0.0.1"
+      - "-mysql-port=3306"
+    depends_on:
+      mysql:
+        condition: service_healthy
+
+  redis:
+    image: redis:7-alpine
+    network_mode: host
+    restart: unless-stopped
+    command: ["redis-server", "--bind", "127.0.0.1", "--port", "6379"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "-h", "127.0.0.1", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  # Upstash Redis REST API emulator on top of plain Redis.
+  # Listens on 127.0.0.1:8079 and forwards to the redis service above.
+  serverless-redis-http:
+    image: hiett/serverless-redis-http:latest
+    network_mode: host
+    restart: unless-stopped
+    environment:
+      SRH_MODE: env
+      SRH_TOKEN: dub-local-token
+      SRH_CONNECTION_STRING: "redis://127.0.0.1:6379"
+      SRH_PORT: "8079"
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  mailhog:
+    image: mailhog/mailhog:latest
+    network_mode: host
+    restart: unless-stopped
+    # MailHog binds to all interfaces by default; SMTP on 1025, UI on 8025.
+
+  # One-shot job: install workspace dependencies and push the Prisma schema to
+  # MySQL so the app has a usable schema when first hit.
+  web-bootstrap:
+    image: node:22-bookworm
+    network_mode: host
+    working_dir: /workspace
+    restart: "no"
+    env_file:
+      - .alloy/web.env
+    volumes:
+      - .:/workspace
+      - pnpm-store:/root/.local/share/pnpm/store
+    depends_on:
+      mysql:
+        condition: service_healthy
+      planetscale-proxy:
+        condition: service_started
+    command:
+      - "bash"
+      - "-lc"
+      - |
+        set -e
+        corepack enable
+        corepack prepare pnpm@9.15.9 --activate
+        pnpm install --frozen-lockfile=false
+        pnpm --filter=@dub/prisma generate
+        # The Next.js app imports @dub/utils, @dub/ui, @dub/email, etc. as
+        # built workspace packages — only some are listed in transpilePackages.
+        # Build all packages once so dev can resolve them.
+        pnpm build:packages
+        # Push schema; tolerate transient failures so the dev server can still
+        # boot and render the login page even if the DB isn't ready yet.
+        pnpm --filter=@dub/prisma push --accept-data-loss --skip-generate || true
+        echo "web-bootstrap: done"
+
+  web:
+    image: node:22-bookworm
+    network_mode: host
+    working_dir: /workspace/apps/web
+    restart: unless-stopped
+    env_file:
+      - .alloy/web.env
+    volumes:
+      - .:/workspace
+      - pnpm-store:/root/.local/share/pnpm/store
+    depends_on:
+      web-bootstrap:
+        condition: service_completed_successfully
+    command:
+      - "bash"
+      - "-lc"
+      - |
+        set -e
+        corepack enable
+        corepack prepare pnpm@9.15.9 --activate
+        # Ensure the prisma client exists for the dev server.
+        pnpm --filter=@dub/prisma generate
+        # Boot Next.js on the upstream port 8888 — that hostname is hardcoded
+        # into APP_HOSTNAMES inside packages/utils, so the app's middleware
+        # only treats requests as the dashboard if the Host header is
+        # localhost:8888. The "alloy-proxy" service below exposes the public
+        # 8080 port and rewrites the Host header on the way through.
+        exec pnpm exec next dev --turbopack --port 8888 --hostname 127.0.0.1
+
+  # Public-facing reverse proxy: localhost:8080 -> localhost:8888 with the
+  # Host header rewritten to "localhost:8888" so the Next.js middleware
+  # routes the request to the app dashboard instead of treating the public
+  # port as an unknown short-link domain.
+  alloy-proxy:
+    image: caddy:2-alpine
+    network_mode: host
+    restart: unless-stopped
+    depends_on:
+      - web
+    volumes:
+      - ./.alloy/Caddyfile:/etc/caddy/Caddyfile:ro
+    command:
+      - "caddy"
+      - "run"
+      - "--config"
+      - "/etc/caddy/Caddyfile"
+      - "--adapter"
+      - "caddyfile"
+
+volumes:
+  mysql-data:
+  pnpm-store:
