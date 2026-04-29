@@ -7,6 +7,10 @@ export const APP_HOSTNAMES = new Set([
   `app.${process.env.NEXT_PUBLIC_APP_DOMAIN}`,
   `preview.${process.env.NEXT_PUBLIC_APP_DOMAIN}`,
   "localhost:8888",
+  // Alloy preview proxy forwards http://localhost:8080 to localhost:8888;
+  // accept it as an app hostname so AppMiddleware (login flow, /app rewrite)
+  // runs the same way it does for localhost:8888.
+  "localhost:8080",
   "localhost",
 ]);
 

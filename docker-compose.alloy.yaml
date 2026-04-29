@@ -1,0 +1,128 @@
+# Alloy dev-env compose for Dub.
+# Boots MySQL + PlanetScale HTTP simulator + Redis + serverless-redis-http
+# (Upstash REST emulator) + MailHog + the Next.js dev server. Every service
+# uses host networking so the sandbox proxy at localhost:8080 can reach the
+# app on localhost:8888 without any published ports.
+services:
+  mysql:
+    image: mysql:8.0
+    network_mode: host
+    environment:
+      MYSQL_DATABASE: planetscale
+      MYSQL_ROOT_HOST: "%"
+      MYSQL_ALLOW_EMPTY_PASSWORD: "yes"
+    command:
+      - --default-authentication-plugin=mysql_native_password
+      - --max_connections=1000
+      - --bind-address=127.0.0.1
+    volumes:
+      - dub-mysql:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+
+  ps-http-sim:
+    image: ghcr.io/mattrobenolt/ps-http-sim:latest
+    network_mode: host
+    command:
+      - -listen-addr=127.0.0.1
+      - -listen-port=3900
+      - -mysql-dbname=planetscale
+      - -mysql-no-pass
+      - -mysql-addr=127.0.0.1
+      - -mysql-port=3306
+    depends_on:
+      mysql:
+        condition: service_healthy
+
+  redis:
+    image: redis:7-alpine
+    network_mode: host
+    command: ["redis-server", "--bind", "127.0.0.1", "--port", "6379"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "-h", "127.0.0.1", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  srh:
+    # Upstash Redis REST emulator (used by @upstash/redis on localhost)
+    image: hiett/serverless-redis-http:latest
+    network_mode: host
+    environment:
+      SRH_MODE: env
+      SRH_TOKEN: alloy_dev_srh_token
+      SRH_CONNECTION_STRING: "redis://127.0.0.1:6379"
+      SRH_HOST: "127.0.0.1"
+      SRH_PORT: "8079"
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  mailhog:
+    # SMTP on 1025, web UI on 8025; binds 0.0.0.0 by default which is fine
+    # for localhost-only sandbox networking.
+    image: mailhog/mailhog:latest
+    network_mode: host
+
+  web:
+    image: node:22-bookworm
+    working_dir: /workspace/apps/web
+    network_mode: host
+    env_file:
+      - .alloy/web.env
+    volumes:
+      - .:/workspace
+      - dub-pnpm-store:/root/.local/share/pnpm/store
+    depends_on:
+      mysql:
+        condition: service_healthy
+      ps-http-sim:
+        condition: service_started
+      srh:
+        condition: service_started
+    command:
+      - bash
+      - -lc
+      - |
+        set -euo pipefail
+        corepack enable >/dev/null 2>&1 || true
+        corepack prepare pnpm@9.15.9 --activate >/dev/null 2>&1 || true
+
+        echo "[alloy] Waiting for ps-http-sim on 127.0.0.1:3900"
+        until (echo > /dev/tcp/127.0.0.1/3900) >/dev/null 2>&1; do sleep 1; done
+        echo "[alloy] Waiting for SRH (Upstash REST) on 127.0.0.1:8079"
+        until (echo > /dev/tcp/127.0.0.1/8079) >/dev/null 2>&1; do sleep 1; done
+
+        cd /workspace
+        echo "[alloy] Installing workspace dependencies (this can take several minutes the first time)"
+        pnpm install --prefer-offline --no-frozen-lockfile
+
+        echo "[alloy] Generating Prisma client"
+        pnpm --filter=@dub/prisma generate
+
+        # The web app imports the @dub/utils and @dub/ui packages from their
+        # built ./dist/ entry points (see "main"/"module" in their
+        # package.json). Without this, Next.js fails to compile with
+        # "Module not found: Can't resolve '@dub/utils'".
+        echo "[alloy] Building shared workspace packages"
+        pnpm --filter=@dub/utils build
+        pnpm --filter=@dub/ui build
+
+        echo "[alloy] Pushing Prisma schema to MySQL"
+        for i in 1 2 3 4 5; do
+          if pnpm --filter=@dub/prisma push --accept-data-loss --skip-generate; then
+            break
+          fi
+          echo "[alloy] prisma push retry $$i"; sleep 3
+        done
+
+        cd /workspace/apps/web
+        echo "[alloy] Starting Next.js dev server on http://127.0.0.1:8888"
+        exec pnpm exec next dev --turbopack --port 8888 --hostname 127.0.0.1
+
+volumes:
+  dub-mysql:
+  dub-pnpm-store:

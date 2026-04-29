@@ -51,3 +51,7 @@ playwright-report/
 **/playwright/.auth/
 test-results/
 blob-report/
+
+# Alloy sandbox/runtime artifacts
+.claude/
+.pnpm-store/
