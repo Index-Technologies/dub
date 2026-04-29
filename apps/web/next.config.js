@@ -107,23 +107,33 @@ module.exports = withPlausibleProxy({
     ],
   },
   async headers() {
+    // The Alloy dev-env proxies the app inside an iframe at
+    // http://localhost:8080. Sending `X-Frame-Options: DENY` would block that
+    // preview, so we drop the header (and only the header) when IS_ALLOY=true.
+    const isAlloy = process.env.IS_ALLOY === "true";
+
+    const baseHeaders = [
+      {
+        key: "Referrer-Policy",
+        value: "no-referrer-when-downgrade",
+      },
+      {
+        key: "X-DNS-Prefetch-Control",
+        value: "on",
+      },
+    ];
+
+    if (!isAlloy) {
+      baseHeaders.push({
+        key: "X-Frame-Options",
+        value: "DENY",
+      });
+    }
+
     return [
       {
         source: "/:path*",
-        headers: [
-          {
-            key: "Referrer-Policy",
-            value: "no-referrer-when-downgrade",
-          },
-          {
-            key: "X-DNS-Prefetch-Control",
-            value: "on",
-          },
-          {
-            key: "X-Frame-Options",
-            value: "DENY",
-          },
-        ],
+        headers: baseHeaders,
       },
       {
         source: "/embed/:path*",
