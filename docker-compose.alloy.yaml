@@ -1,0 +1,101 @@
+# Alloy dev-env compose file for Dub.
+#
+# Architecture notes:
+#   * Uses `network_mode: host` per Alloy sandbox requirements – no
+#     bridge networks, no published `ports` blocks.
+#   * MySQL listens on 127.0.0.1:3306; the PlanetScale HTTP simulator on
+#     127.0.0.1:3900; Redis on 127.0.0.1:6379; serverless-redis-http
+#     (Upstash REST shim) on 127.0.0.1:80.
+#   * The web service runs `next dev --turbopack --port 8888`. The Alloy
+#     proxy fronts that on http://localhost:8080.
+#   * Run `.alloy/populate-env.sh` once before `docker compose up`; it
+#     materializes apps/web/.env which the web service reads via env_file.
+
+services:
+  mysql:
+    image: mysql:8.0
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      MYSQL_DATABASE: planetscale
+      MYSQL_ROOT_HOST: "%"
+      MYSQL_ALLOW_EMPTY_PASSWORD: "yes"
+    command:
+      - --max_connections=1000
+      - --default-authentication-plugin=mysql_native_password
+      - --bind-address=127.0.0.1
+    volumes:
+      - alloy-mysql:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+
+  ps-sim:
+    image: ghcr.io/mattrobenolt/ps-http-sim:latest
+    restart: unless-stopped
+    network_mode: host
+    command:
+      - -listen-addr=127.0.0.1
+      - -listen-port=3900
+      - -mysql-dbname=planetscale
+      - -mysql-no-pass
+      - -mysql-addr=127.0.0.1
+      - -mysql-port=3306
+    depends_on:
+      mysql:
+        condition: service_healthy
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    network_mode: host
+    command: ["redis-server", "--bind", "127.0.0.1", "--port", "6379"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "-h", "127.0.0.1", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+
+  # Upstash REST API shim for local development. The hiett/serverless-redis-http
+  # image is a Phoenix/Elixir app that binds to port 80 by default; on the host
+  # network that's fine because nothing else in this stack uses 80.
+  srh:
+    image: hiett/serverless-redis-http:latest
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      SRH_MODE: env
+      SRH_TOKEN: alloy_local_dev_token
+      SRH_CONNECTION_STRING: redis://127.0.0.1:6379
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  web:
+    image: node:22-bookworm
+    restart: unless-stopped
+    network_mode: host
+    working_dir: /workspace
+    env_file:
+      - ./apps/web/.env
+    environment:
+      IS_ALLOY: ${IS_ALLOY:-true}
+      NODE_ENV: development
+      # Force the Alloy populate-env defaults to win over any host shell
+      # values that would otherwise be re-injected via env_file precedence.
+      HOSTNAME: 0.0.0.0
+    volumes:
+      - .:/workspace
+    depends_on:
+      mysql:
+        condition: service_healthy
+      ps-sim:
+        condition: service_started
+      srh:
+        condition: service_started
+    command: ["bash", "/workspace/.alloy/start-web.sh"]
+
+volumes:
+  alloy-mysql:

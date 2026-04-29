@@ -7,6 +7,11 @@ export const APP_HOSTNAMES = new Set([
   `app.${process.env.NEXT_PUBLIC_APP_DOMAIN}`,
   `preview.${process.env.NEXT_PUBLIC_APP_DOMAIN}`,
   "localhost:8888",
+  // Alloy dev-env preview proxies http://localhost:8080 to the Next dev server
+  // and forwards the original Host header. Recognising it here keeps the app
+  // routing the same whether the request arrives directly on :8888 or via the
+  // Alloy proxy on :8080.
+  "localhost:8080",
   "localhost",
 ]);
 
